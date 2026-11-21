@@ -135,7 +135,7 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-The 133 tests (2 need `google-adk`) cover every row of the project brief's check tables
+The 135 tests (2 need `google-adk`) cover every row of the project brief's check tables
 (`tests/test_brief_checks.py`), the FAQ loader (URL normalisation, aliases, fallbacks, retrieval), guardrails,
 tickets and feedback, the agent (offline answers, streamed control tokens, error/refusal fallback), the
 real Anthropic/OpenAI SDKs against a local fake API (request shape and streaming), an end-to-end

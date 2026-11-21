@@ -117,6 +117,19 @@ def test_llm_offer_sentence_is_an_offer():
     assert reply.kind == "offer" and reply.text == OFFER
 
 
+def test_llm_offer_with_extra_text_becomes_exactly_the_offer():
+    raw = "Sorry, earlier I was wrong. I don't know that yet. Would you like me to connect you to a person? [[FAQ: 3]]"
+    tara = Tara(FAQS, LLMSettings("anthropic", "claude-opus-5-5", "k"), provider_fn=lambda s, m: iter([raw]))
+    reply, chunks = run(tara, "Do you have a loyalty points program?")
+    assert reply.text == OFFER and reply.kind == "offer" and not reply.sources
+    assert None in chunks and chunks[-1] == OFFER
+
+
+def test_system_prompt_says_app_tickets_are_real():
+    prompt = build_system_prompt(FAQS)
+    assert "raises tickets automatically" in prompt and "Never say a ticket is not real" in prompt
+
+
 def test_provider_error_falls_back_to_faq_answer():
     def provider(system, messages):
         yield "Partial"

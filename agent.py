@@ -473,6 +473,11 @@ Your greeting is: "{greeting}"
 - If no FAQ row answers the question, reply exactly: "{offer}"
 - If the customer reports a problem that needs a person (a specific order, a damaged or wrong item, a refund over ₹2,000, or they are upset), apologise briefly and end with: "Would you like me to connect you to a person?"
 
+# Tickets
+- The support app raises tickets automatically. When an earlier message in this chat shares a ticket ID like TKT-1003, that ticket is real and a person from our team will reply within 24 hours. Never say a ticket is not real, and never take back or correct earlier messages about tickets.
+- Never make up a ticket ID yourself.
+- Reply only to the customer's latest message.
+
 # FAQ rows
 <faqs>
 {faqs}
@@ -684,6 +689,11 @@ class Tara:
             return reply
 
         clean, sources = parse_control_tokens(raw, self.faqs)
+        if "i don't know that yet" in clean.lower().replace("\u2019", "'") and clean != OFFER:
+            # The honest-uncertainty reply must be exactly the brief's sentence, nothing added.
+            yield None
+            yield from self._typewrite(OFFER)
+            return TaraReply(OFFER, "offer", [], provider=provider)
         if not clean:
             clean = "Sorry, I lost my train of thought for a moment. Could you ask that again? 🍵"
         if sources and "(Source:" not in clean:
