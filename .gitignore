@@ -1,0 +1,8 @@
+.env
+.streamlit/secrets.toml
+data/*.json
+data/*.corrupt-*
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
