@@ -1,11 +1,10 @@
-"""TeaTrail Store support app: chat with Tara, hand off to a human, track tickets."""
+"""TeaTrail Store Support: chat with Tara, hand off to a person, track open tickets."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
 import hmac
-import json
 import time
 import uuid
 from html import escape
@@ -16,25 +15,25 @@ import config
 import faq_loader
 import styles
 import tickets
-from agent import Tara, build_ticket_summary, format_transcript
+from agent import GREETING, Tara, format_transcript
 
 MAX_ATTEMPTS = 5
 LOCKOUT_SECONDS = 30
 SUGGESTIONS = [
-    ("🍃", "How fresh is your tea?"),
-    ("🚚", "Delivery time & shipping cost?"),
-    ("🎁", "Tell me about gift hampers"),
+    ("🚚", "How much does delivery cost?"),
     ("↩️", "What is your return policy?"),
-    ("💳", "Which payment options do you have?"),
+    ("📦", "Track my order"),
+    ("🍵", "Are your teas fresh?"),
+    ("🎁", "Do you sell gift hampers?"),
 ]
 
 authed = st.session_state.get("authenticated", False)
 st.set_page_config(
-    page_title="TeaTrail Support · Tara",
+    page_title="TeaTrail Store Support",
     page_icon="🍃",
     layout="centered",
     initial_sidebar_state="expanded" if authed else "collapsed",
-    menu_items={"Get help": None, "Report a bug": None, "About": "TeaTrail Store support assistant"},
+    menu_items={"Get help": None, "Report a bug": None, "About": "TeaTrail Store Support"},
 )
 st.html(styles.CSS)
 
@@ -97,8 +96,11 @@ if not authed:
 # ==========================================================================
 # State & resources
 # ==========================================================================
-st.session_state.setdefault("messages", [])
-st.session_state.setdefault("queue_open", False)
+def _greeting_message() -> dict:
+    return {"id": uuid.uuid4().hex[:10], "role": "assistant", "kind": "greeting", "content": GREETING}
+
+
+st.session_state.setdefault("messages", [_greeting_message()])
 
 
 @st.cache_data(show_spinner=False)
@@ -107,16 +109,22 @@ def _svg_data_uri(path: str) -> str:
         return "data:image/svg+xml;base64," + base64.b64encode(fh.read()).decode("ascii")
 
 
+def save_ticket(message: str, reason: str, priority: str, conversation: list[dict]) -> dict:
+    """Tickets are created by code (never by the model), so IDs never repeat."""
+    return tickets.create_ticket(message=message, reason=reason, priority=priority,
+                                 transcript=format_transcript(conversation))
+
+
 kb = faq_loader.load_knowledge_base(config.faq_sheet_url())
 llm = config.llm_settings()
-tara = Tara(kb.faqs, llm, typing_delay=0.012)
+tara = Tara(kb.faqs, llm, ticket_fn=save_ticket, typing_delay=0.012)
 
 
 def _history() -> list[dict]:
     return [
         {"role": m["role"], "content": m["content"]}
         for m in st.session_state.messages
-        if m.get("kind", "text") == "text"
+        if m.get("kind") != "greeting"
     ]
 
 
@@ -124,8 +132,8 @@ def _queue_prompt(prompt: str) -> None:
     st.session_state.pending_prompt = prompt
 
 
-def _request_ticket(source: str, category_hint: str | None = None) -> None:
-    st.session_state.open_ticket = {"source": source, "hint": category_hint}
+def _open_contact(ticket_id: str) -> None:
+    st.session_state.contact_ticket = ticket_id
 
 
 def _on_feedback(message_id: str) -> None:
@@ -147,69 +155,36 @@ def _lock() -> None:
 
 
 def _new_chat() -> None:
-    st.session_state.messages = []
+    st.session_state.messages = [_greeting_message()]
 
 
 def _refresh_faqs() -> None:
     faq_loader.load_knowledge_base.clear()
-    st.toast("FAQs refreshed from the source ✨")
+    st.toast("FAQs refreshed from the sheet ✨")
 
 
 # ==========================================================================
-# Ticket dialog
+# Contact details for a ticket (optional)
 # ==========================================================================
-@st.dialog("Raise a support ticket", width="medium", icon="🎫")
-def ticket_dialog(source: str, category_hint: str | None) -> None:
-    history = _history()
-    transcript = format_transcript(history)
-    st.caption("A TeaTrail teammate will pick this up and reply by email. Fields marked * are required.")
-
-    with st.form("ticket_form", border=False):
+@st.dialog("Add your contact details", width="medium", icon="🎫")
+def contact_dialog(ticket_id: str) -> None:
+    st.caption(f"Ticket {ticket_id} is already open. Add your details so our team knows how to reach you.")
+    with st.form("contact_form", border=False):
         c1, c2 = st.columns(2)
         name = c1.text_input("Name *", max_chars=80, placeholder="Your full name")
         email = c2.text_input("Email *", max_chars=120, placeholder="you@example.com", type="email")
-        c3, c4 = st.columns(2)
-        order_id = c3.text_input("Order ID (optional)", max_chars=30, placeholder="e.g. TT-48213")
-        suggested = tickets.suggest_category(category_hint)
-        category = c4.selectbox(
-            "Issue category *", tickets.TICKET_CATEGORIES, index=tickets.TICKET_CATEGORIES.index(suggested)
-        )
-        summary = st.text_area(
-            "Conversation summary *",
-            value=build_ticket_summary(history),
-            height=110,
-            max_chars=tickets.MAX_SUMMARY_CHARS,
-            placeholder="Tell us briefly what you need help with…",
-        )
-        if transcript:
-            with st.expander(f"📎 Chat transcript attached ({len(history)} messages)"):
-                st.text(transcript)
-        submitted = st.form_submit_button("Submit ticket", type="primary", use_container_width=True)
-
+        order_id = st.text_input("Order ID (optional)", max_chars=30, placeholder="e.g. 458812")
+        submitted = st.form_submit_button("Save details", type="primary", use_container_width=True)
     if submitted:
         try:
-            ticket = tickets.create_ticket(
-                name=name,
-                email=email,
-                category=category,
-                summary=summary,
-                order_id=order_id,
-                transcript=transcript,
-                source=source,
-            )
+            tickets.update_contact(ticket_id, name, email, order_id)
         except ValueError as exc:
             st.error(str(exc), icon="✋")
             return
-        st.session_state.messages.append(
-            {
-                "id": uuid.uuid4().hex[:10],
-                "role": "assistant",
-                "kind": "ticket",
-                "content": f"Ticket {ticket['id']} raised",
-                "ticket": ticket,
-            }
-        )
-        st.session_state.queue_open = True
+        for msg in st.session_state.messages:
+            if (msg.get("ticket") or {}).get("ticket_id") == ticket_id:
+                msg["ticket"].update(name=name.strip(), email=email.strip(), order_id=order_id.strip())
+        st.toast(f"Thanks! We'll reply to {email.strip()} about {ticket_id}.")
         st.rerun()
 
 
@@ -221,15 +196,32 @@ with st.sidebar:
     st.write("")
 
     st.button(
-        "Talk to a human",
+        "Talk to a person",
         key="sb_human",
         icon="🙋",
         use_container_width=True,
-        on_click=_request_ticket,
-        args=("manual", None),
+        on_click=_queue_prompt,
+        args=("Let me talk to a real person.",),
     )
     st.button("New chat", key="sb_new", icon="🧹", use_container_width=True, on_click=_new_chat)
-    st.button("Refresh FAQs", key="sb_refresh", icon="🔄", use_container_width=True, on_click=_refresh_faqs)
+
+    open_tickets = tickets.list_tickets(status="open")
+    st.markdown(f"##### Open tickets · {len(open_tickets)}")
+    if not open_tickets:
+        st.caption("No open tickets. Tickets Tara raises appear here live.")
+    for t in open_tickets[:6]:
+        st.markdown(styles.queue_item_html(t), unsafe_allow_html=True)
+    if len(open_tickets) > 6:
+        st.caption(f"+ {len(open_tickets) - 6} more in tickets.csv")
+    if open_tickets:
+        st.download_button(
+            "Download tickets.csv",
+            data=tickets.tickets_csv(),
+            file_name="tickets.csv",
+            mime="text/csv",
+            icon="⬇️",
+            use_container_width=True,
+        )
 
     st.markdown("##### Knowledge base")
     synced = styles.relative_time(kb.fetched_at)
@@ -239,36 +231,17 @@ with st.sidebar:
     )
     if kb.warning:
         st.warning(kb.warning, icon="⚠️")
-    elif kb.source == "sample":
-        st.caption("Add `FAQ_SHEET_CSV_URL` to secrets to load FAQs from your Google Sheet.")
+    st.button("Refresh FAQs", key="sb_refresh", icon="🔄", use_container_width=True, on_click=_refresh_faqs)
 
-    engine_sub = llm.model if tara.online else "Add an API key to enable AI answers"
+    engine_sub = llm.model if tara.online else "Answers straight from the FAQ sheet"
     st.markdown(styles.card_html("Assistant engine", llm.label, engine_sub), unsafe_allow_html=True)
-
-    all_tickets = tickets.list_tickets()
-    with st.expander(f"📋 Support Queue (Demo View) · {len(all_tickets)}", expanded=st.session_state.queue_open):
-        if not all_tickets:
-            st.caption("No tickets yet. Raise one from the chat to see it appear here live.")
-        for t in all_tickets[:8]:
-            st.markdown(styles.queue_item_html(t), unsafe_allow_html=True)
-        if len(all_tickets) > 8:
-            st.caption(f"+ {len(all_tickets) - 8} older tickets")
-        if all_tickets:
-            st.download_button(
-                "Download tickets.json",
-                data=json.dumps(list(reversed(all_tickets)), indent=2, ensure_ascii=False),
-                file_name="tickets.json",
-                mime="application/json",
-                icon="⬇️",
-                use_container_width=True,
-            )
 
     counts = tickets.feedback_counts()
     total = counts["up"] + counts["down"]
     rate = f"{round(100 * counts['up'] / total)}% helpful" if total else "No ratings yet"
-    st.markdown("##### Reply feedback")
+    st.markdown("##### Was this helpful?")
     st.markdown(
-        f'<div class="tt-fb"><span>👍 <b>{counts["up"]}</b></span><span>👎 <b>{counts["down"]}</b></span>'
+        f'<div class="tt-fb"><span>👍 Yes <b>{counts["up"]}</b></span><span>👎 No <b>{counts["down"]}</b></span>'
         f"<span>· {rate}</span></div>",
         unsafe_allow_html=True,
     )
@@ -295,14 +268,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-prompt = st.chat_input("Ask Tara about delivery, payments, returns, freshness…", max_chars=1000)
+prompt = st.chat_input("Ask Tara about delivery, payments, returns, refunds…", max_chars=1000)
 prompt = prompt or st.session_state.pop("pending_prompt", None)
-
-if not st.session_state.messages and not prompt:
-    st.markdown(styles.welcome_html(), unsafe_allow_html=True)
-    with st.container(key="chips", horizontal=True, gap="small"):
-        for i, (icon, text) in enumerate(SUGGESTIONS):
-            st.button(text, key=f"chip_{i}", icon=icon, on_click=_queue_prompt, args=(text,))
 
 
 def render_message(msg: dict, is_last: bool) -> None:
@@ -314,42 +281,41 @@ def render_message(msg: dict, is_last: bool) -> None:
 
     with st.chat_message("assistant", avatar=styles.TARA_AVATAR):
         st.markdown('<span class="tt-role-assistant"></span>', unsafe_allow_html=True)
-        if msg.get("kind") == "ticket":
-            ticket = msg["ticket"]
-            first_name = (ticket["name"].split() or ["there"])[0]
-            st.markdown(
-                f"<p>All set, <b>{escape(first_name)}</b>! 🎉 I've passed this to the TeaTrail team. "
-                f"A teammate will reply to <b>{escape(ticket['email'])}</b>. Here's your reference:</p>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(styles.ticket_html(ticket), unsafe_allow_html=True)
-            st.caption("You can keep chatting with me in the meantime 🍵")
-            return
-
         st.markdown(msg["content"])
-        if msg.get("sources"):
-            st.markdown(styles.sources_html(msg["sources"]), unsafe_allow_html=True)
+        ticket = msg.get("ticket")
+        if ticket:
+            st.markdown(styles.ticket_html(ticket), unsafe_allow_html=True)
+            if not ticket.get("email"):
+                st.button(
+                    "Add contact details (optional)",
+                    key=f"contact_{msg['id']}",
+                    icon="✉️",
+                    type="tertiary",
+                    on_click=_open_contact,
+                    args=(ticket["ticket_id"],),
+                )
         if msg.get("degraded"):
             st.markdown(
-                '<div class="tt-note">Answered straight from our FAQs while the AI service is unavailable.</div>',
+                '<div class="tt-note">Answered straight from our FAQ sheet while the AI service is unavailable.</div>',
                 unsafe_allow_html=True,
             )
-        if msg.get("handoff") and is_last:
-            st.markdown(styles.handoff_html(), unsafe_allow_html=True)
-            st.button(
-                "Raise a ticket",
-                key=f"handoff_{msg['id']}",
-                icon="🎫",
-                on_click=_request_ticket,
-                args=("tara", msg.get("category_hint")),
-            )
-        if msg.get("kind") in {"answer", "handoff"}:
+        if msg.get("kind") == "offer" and is_last:
+            with st.container(key=f"offer_{msg['id']}", horizontal=True, gap="small"):
+                st.button("Yes, connect me", key=f"yes_{msg['id']}", icon="🙋", on_click=_queue_prompt, args=("Yes",))
+                st.button("No thanks", key=f"no_{msg['id']}", on_click=_queue_prompt, args=("No thanks",))
+        if msg.get("kind") in {"answer", "offer", "ticket"}:
             st.feedback("thumbs", key=f"fb_{msg['id']}", on_change=_on_feedback, args=(msg["id"],))
 
 
 messages = st.session_state.messages
 for i, msg in enumerate(messages):
     render_message(msg, is_last=i == len(messages) - 1)
+
+if len(messages) == 1 and not prompt:
+    st.markdown(styles.welcome_html(), unsafe_allow_html=True)
+    with st.container(key="chips", horizontal=True, gap="small"):
+        for i, (icon, text) in enumerate(SUGGESTIONS):
+            st.button(text, key=f"chip_{i}", icon=icon, on_click=_queue_prompt, args=(text,))
 
 if prompt:
     history = _history()
@@ -377,17 +343,15 @@ if prompt:
                 "role": "assistant",
                 "kind": reply.kind,
                 "content": reply.text,
-                "handoff": reply.handoff,
+                "ticket": reply.ticket,
                 "sources": [{"id": f.id, "question": f.question, "category": f.category} for f in reply.sources],
                 "provider": reply.provider,
                 "degraded": reply.degraded,
-                "category_hint": reply.category_hint,
             },
         ]
     )
     st.rerun()
 
-# Open the ticket form last, so it can be requested from the sidebar or a chat bubble.
-request = st.session_state.pop("open_ticket", None)
-if request:
-    ticket_dialog(request["source"], request.get("hint"))
+contact_for = st.session_state.pop("contact_ticket", None)
+if contact_for:
+    contact_dialog(contact_for)

@@ -28,25 +28,37 @@ def test_unlock_shows_chat_and_chips():
     assert not at.exception
     assert at.session_state["authenticated"]
     labels = [b.label for b in at.button]
-    assert "How fresh is your tea?" in labels and "Talk to a human" in labels
+    assert "How much does delivery cost?" in labels and "Talk to a person" in labels
+    assert at.session_state["messages"][0]["content"] == "Hi, I'm Tara from TeaTrail! How can I help with your order today?"
 
 
 def test_chip_sends_question_and_tara_answers():
     at = _unlocked()
-    chip = next(b for b in at.button if b.label == "Tell me about gift hampers")
+    chip = next(b for b in at.button if b.label == "Do you sell gift hampers?")
     chip.click().run()
     assert not at.exception
     msgs = at.session_state["messages"]
-    assert msgs[0]["content"] == "Tell me about gift hampers"
-    assert "₹799" in msgs[1]["content"] and msgs[1]["kind"] == "answer"
+    assert msgs[1]["content"] == "Do you sell gift hampers?"
+    assert "₹799" in msgs[2]["content"] and msgs[2]["content"].endswith("(Source: Products)")
 
 
-def test_uncovered_question_offers_ticket_button():
+def test_uncovered_question_offers_a_person_and_yes_raises_a_ticket():
     at = _unlocked()
     at.chat_input[0].set_value("Do you have a physical store in Goa?").run()
     assert not at.exception
-    assert at.session_state["messages"][-1]["handoff"]
-    assert any(b.label == "Raise a ticket" for b in at.button)
+    assert at.session_state["messages"][-1]["kind"] == "offer"
+    next(b for b in at.button if b.label == "Yes, connect me").click().run()
+    last = at.session_state["messages"][-1]
+    assert last["ticket"]["ticket_id"] == "TKT-1001" and "TKT-1001" in last["content"]
+
+
+def test_angry_message_shows_ticket_in_sidebar():
+    at = _unlocked()
+    at.chat_input[0].set_value("My order arrived broken and I'm really angry!").run()
+    assert not at.exception
+    assert "TKT-1001" in at.session_state["messages"][-1]["content"]
+    sidebar_html = " ".join(m.value for m in at.sidebar.markdown)
+    assert "TKT-1001" in sidebar_html and "Open tickets · 1" in sidebar_html
 
 
 def test_app_stays_locked_without_a_passcode(monkeypatch):

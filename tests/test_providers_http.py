@@ -86,7 +86,7 @@ def test_anthropic_request_shape_and_streaming(fake_api):
     tara = Tara(FAQS, LLMSettings("anthropic", "claude-opus-5-5", "sk-ant-test"))
     reply, chunks = _reply(tara, "How much is shipping?")
 
-    assert reply.text == "Shipping is free on orders of ₹999+ 🍃"
+    assert reply.text == "Shipping is free on orders of ₹999+ 🍃\n\n(Source: Delivery)"
     assert [s.id for s in reply.sources] == [2] and not reply.degraded
     assert "[[" not in "".join(c for c in chunks if c)
 
@@ -110,21 +110,21 @@ def test_anthropic_retries_without_fallbacks_on_400(fake_api):
                            (200, "text/event-stream", _anthropic_stream(["Yes! [[FAQ: 19]]"]))]
     tara = Tara(FAQS, LLMSettings("anthropic", "claude-opus-5-5", "sk-ant-test"))
     reply, _ = _reply(tara, "Do you have gift hampers?")
-    assert reply.text == "Yes!" and not reply.degraded
+    assert reply.text == "Yes!\n\n(Source: Products)" and not reply.degraded
     assert "fallbacks" in fake_api.requests[0][2] and "fallbacks" not in fake_api.requests[1][2]
 
 
 def test_anthropic_refusal_falls_back_to_faq(fake_api):
     fake_api.responses.append((200, "text/event-stream", _anthropic_stream(["Partial"], stop_reason="refusal")))
     tara = Tara(FAQS, LLMSettings("anthropic", "claude-opus-5-5", "sk-ant-test"))
-    reply, chunks = _reply(tara, "How fresh is your tea?")
+    reply, chunks = _reply(tara, "Are your teas fresh?")
     assert None in chunks and reply.degraded and "harvest" in reply.text
 
 
 def test_anthropic_fallbacks_can_be_disabled(fake_api):
     fake_api.responses.append((200, "text/event-stream", _anthropic_stream(["Hi! 🍵"])))
     tara = Tara(FAQS, LLMSettings("anthropic", "claude-opus-5-5", "sk-ant-test", anthropic_fallbacks=False))
-    _reply(tara, "How fresh is your tea?")
+    _reply(tara, "Are your teas fresh?")
     _, headers, body = fake_api.requests[0]
     assert "fallbacks" not in body and "server-side-fallback" not in headers.get("anthropic-beta", "")
 
@@ -138,7 +138,7 @@ def test_openai_request_shape_and_streaming(fake_api):
     fake_api.responses.append((200, "text/event-stream", (payload + "data: [DONE]\n\n").encode()))
     tara = Tara(FAQS, LLMSettings("openai", "gpt-5-mini", "sk-test"))
     reply, _ = _reply(tara, "Which payment options do you have?")
-    assert reply.text == "We accept UPI and cards." and [s.id for s in reply.sources] == [6]
+    assert reply.text.startswith("We accept UPI and cards.") and [s.id for s in reply.sources] == [6]
     path, _, body = fake_api.requests[0]
     assert path == "/v1/chat/completions"
     assert body["messages"][0]["role"] == "system" and body["stream"] is True

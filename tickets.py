@@ -1,91 +1,83 @@
-"""Support tickets and response feedback, persisted as small JSON files.
+"""Support tickets and reply feedback, stored as CSV files.
 
-Writes go through a temp file + ``os.replace`` (atomic on POSIX and Windows)
-under a process-wide lock, because Streamlit serves every browser session
-from threads in the same process.
+tickets.csv columns (the first six are the ones the brief asks for):
+    ticket_id, time, message, reason, priority, status,
+    name, email, order_id, transcript, source
+
+Ticket IDs (TKT-1001, TKT-1002, ...) are always made here, never by the model,
+so they never repeat. Writes go through a temp file + ``os.replace`` under a
+process-wide lock, because Streamlit serves every browser session from
+threads in the same process.
 """
 
 from __future__ import annotations
 
-import json
+import csv
+import io
 import os
 import re
 import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import config
 
-FIRST_TICKET_NUMBER = 1042
-TICKET_CATEGORIES = [
-    "Delivery & Shipping",
-    "Payments",
-    "Returns",
-    "Refunds",
-    "Tea & Coffee Freshness",
-    "Gift Hampers",
-    "Order Issue",
-    "Other",
+FIRST_TICKET_NUMBER = 1001
+TICKET_FIELDS = [
+    "ticket_id", "time", "message", "reason", "priority", "status",
+    "name", "email", "order_id", "transcript", "source",
 ]
-# Map FAQ categories to ticket categories for auto-suggestion.
-FAQ_TO_TICKET_CATEGORY = {
-    "delivery": "Delivery & Shipping",
-    "payments": "Payments",
-    "offers": "Payments",
-    "orders": "Order Issue",
-    "account": "Order Issue",
-    "returns": "Returns",
-    "refunds": "Refunds",
-    "tea freshness": "Tea & Coffee Freshness",
-    "gift hampers": "Gift Hampers",
-    "products": "Other",
-}
+FEEDBACK_FIELDS = ["message_id", "time", "rating", "question", "answer"]
+PRIORITIES = ("normal", "high")
+
+MAX_MESSAGE_CHARS = 1000
+MAX_TRANSCRIPT_CHARS = 8000
+MAX_STORED_ROWS = 5000
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 _ORDER_RE = re.compile(r"^[A-Za-z0-9#\-_/ ]{3,30}$")
 _LOCK = threading.Lock()
 
-MAX_SUMMARY_CHARS = 2000
-MAX_TRANSCRIPT_CHARS = 8000
-MAX_STORED_TICKETS = 2000
-MAX_FEEDBACK_ENTRIES = 5000
+
+def tickets_path() -> Path:
+    return config.data_dir() / "tickets.csv"
 
 
-def _tickets_path() -> Path:
-    return config.data_dir() / "tickets.json"
-
-
-def _feedback_path() -> Path:
-    return config.data_dir() / "feedback.json"
+def feedback_path() -> Path:
+    return config.data_dir() / "feedback.csv"
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _read_json(path: Path, default: Any) -> Any:
+def _read_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
-        return default
+        return []
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        with path.open(newline="", encoding="utf-8") as fh:
+            return [dict(row) for row in csv.DictReader(fh)]
+    except (csv.Error, UnicodeDecodeError, OSError):
         # Keep the unreadable file for inspection and start fresh.
         backup = path.with_suffix(path.suffix + f".corrupt-{int(datetime.now().timestamp())}")
         try:
             path.replace(backup)
         except OSError:
             pass
-        return default
+        return []
 
 
-def _write_json(path: Path, data: Any) -> None:
+def _write_rows(path: Path, fields: list[str], rows: list[dict[str, str]]) -> None:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows[-MAX_STORED_ROWS:])
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(buffer.getvalue())
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
@@ -96,7 +88,16 @@ def _write_json(path: Path, data: Any) -> None:
 # --------------------------------------------------------------------------
 # Tickets
 # --------------------------------------------------------------------------
-def validate_ticket(name: str, email: str, order_id: str, category: str, summary: str) -> list[str]:
+def _next_id(rows: list[dict[str, str]]) -> str:
+    numbers = [
+        int(r["ticket_id"].split("-")[1])
+        for r in rows
+        if re.fullmatch(r"TKT-\d+", r.get("ticket_id") or "")
+    ]
+    return f"TKT-{max(numbers) + 1 if numbers else FIRST_TICKET_NUMBER}"
+
+
+def validate_contact(name: str, email: str, order_id: str = "") -> list[str]:
     errors = []
     if not name.strip():
         errors.append("Please share your name so our team knows who to reply to.")
@@ -106,108 +107,107 @@ def validate_ticket(name: str, email: str, order_id: str, category: str, summary
         errors.append("Please enter a valid email address (e.g. you@example.com).")
     if order_id.strip() and not _ORDER_RE.match(order_id.strip()):
         errors.append("Order ID can only contain letters, numbers, #, - or / (3–30 characters).")
-    if category not in TICKET_CATEGORIES:
-        errors.append("Please choose an issue category.")
-    if len(summary.strip()) < 10:
-        errors.append("Please add a short description of the issue (at least 10 characters).")
     return errors
 
 
 def create_ticket(
-    name: str,
-    email: str,
-    category: str,
-    summary: str,
-    order_id: str = "",
+    message: str,
+    reason: str,
+    priority: str = "normal",
     transcript: str = "",
-    source: str = "manual",
-) -> dict[str, Any]:
-    """Validate, persist and return a new ticket. Raises ValueError on bad input."""
-    errors = validate_ticket(name, email, order_id, category, summary)
-    if errors:
-        raise ValueError(" ".join(errors))
+    source: str = "chat",
+    name: str = "",
+    email: str = "",
+    order_id: str = "",
+) -> dict[str, str]:
+    """Save a new open ticket and return it. Raises ValueError on bad input."""
+    if not message.strip():
+        raise ValueError("A ticket needs the customer's message.")
+    if not reason.strip():
+        raise ValueError("A ticket needs a reason.")
+    priority = priority.strip().lower()
+    if priority not in PRIORITIES:
+        priority = "normal"
+    if email.strip() or name.strip():
+        errors = validate_contact(name, email, order_id)
+        if errors:
+            raise ValueError(" ".join(errors))
 
     with _LOCK:
-        tickets = _read_json(_tickets_path(), [])
-        numbers = [
-            int(t["id"].split("-")[1])
-            for t in tickets
-            if isinstance(t, dict) and re.fullmatch(r"TT-\d+", str(t.get("id", "")))
-        ]
-        next_number = max(numbers) + 1 if numbers else FIRST_TICKET_NUMBER
+        rows = _read_rows(tickets_path())
         ticket = {
-            "id": f"TT-{next_number}",
-            "created_at": _now(),
-            "status": "Open",
+            "ticket_id": _next_id(rows),
+            "time": _now(),
+            "message": message.strip()[:MAX_MESSAGE_CHARS],
+            "reason": reason.strip()[:200],
+            "priority": priority,
+            "status": "open",
             "name": name.strip(),
             "email": email.strip(),
             "order_id": order_id.strip(),
-            "category": category,
-            "summary": summary.strip()[:MAX_SUMMARY_CHARS],
             "transcript": transcript.strip()[-MAX_TRANSCRIPT_CHARS:],
-            "source": source,  # "tara" (suggested by Tara) or "manual" (button)
+            "source": source,
         }
-        tickets.append(ticket)
-        _write_json(_tickets_path(), tickets[-MAX_STORED_TICKETS:])
+        rows.append(ticket)
+        _write_rows(tickets_path(), TICKET_FIELDS, rows)
     return ticket
 
 
-def list_tickets() -> list[dict[str, Any]]:
-    """All tickets, newest first."""
-    tickets = _read_json(_tickets_path(), [])
-    tickets = [t for t in tickets if isinstance(t, dict) and "id" in t]
-    return list(reversed(tickets))
+def update_contact(ticket_id: str, name: str, email: str, order_id: str = "") -> dict[str, str]:
+    """Add the customer's contact details to an existing ticket."""
+    errors = validate_contact(name, email, order_id)
+    if errors:
+        raise ValueError(" ".join(errors))
+    with _LOCK:
+        rows = _read_rows(tickets_path())
+        for row in rows:
+            if row.get("ticket_id") == ticket_id:
+                row.update(name=name.strip(), email=email.strip(), order_id=order_id.strip())
+                _write_rows(tickets_path(), TICKET_FIELDS, rows)
+                return row
+    raise ValueError(f"Ticket {ticket_id} was not found.")
 
 
-def suggest_category(faq_category: str | None) -> str:
-    if not faq_category:
-        return "Other"
-    return FAQ_TO_TICKET_CATEGORY.get(faq_category.strip().lower(), "Other")
+def list_tickets(status: str | None = None) -> list[dict[str, str]]:
+    """Tickets newest first, optionally only those with the given status."""
+    rows = [r for r in _read_rows(tickets_path()) if r.get("ticket_id")]
+    if status:
+        rows = [r for r in rows if r.get("status") == status]
+    return list(reversed(rows))
+
+
+def get_ticket(ticket_id: str) -> dict[str, str] | None:
+    wanted = ticket_id.strip().upper()
+    return next((r for r in list_tickets() if r["ticket_id"].upper() == wanted), None)
+
+
+def tickets_csv() -> str:
+    path = tickets_path()
+    return path.read_text(encoding="utf-8") if path.exists() else ",".join(TICKET_FIELDS) + "\n"
 
 
 # --------------------------------------------------------------------------
 # Feedback
 # --------------------------------------------------------------------------
-def _empty_feedback() -> dict[str, Any]:
-    return {"counts": {"up": 0, "down": 0}, "log": []}
-
-
 def record_feedback(message_id: str, rating: str, question: str = "", answer: str = "") -> dict[str, int]:
-    """Record or update a thumbs rating for one of Tara's replies.
+    """Record or update a Yes/No ("up"/"down") rating for one of Tara's replies.
 
-    Re-rating the same message replaces the earlier vote instead of
-    double-counting it. Returns the updated counts.
+    Re-rating the same reply replaces the earlier vote instead of double-counting.
     """
     if rating not in {"up", "down"}:
         raise ValueError("rating must be 'up' or 'down'")
-
     with _LOCK:
-        data = _read_json(_feedback_path(), _empty_feedback())
-        if not isinstance(data, dict) or "log" not in data:
-            data = _empty_feedback()
-        existing = next((e for e in data["log"] if e.get("message_id") == message_id), None)
+        rows = _read_rows(feedback_path())
+        existing = next((r for r in rows if r.get("message_id") == message_id), None)
         if existing:
-            existing.update(rating=rating, updated_at=_now())
+            existing.update(rating=rating, time=_now())
         else:
-            data["log"].append(
-                {
-                    "message_id": message_id,
-                    "rating": rating,
-                    "question": question[:500],
-                    "answer": answer[:1000],
-                    "created_at": _now(),
-                }
-            )
-        data["log"] = data["log"][-MAX_FEEDBACK_ENTRIES:]
-        data["counts"] = {
-            "up": sum(1 for e in data["log"] if e.get("rating") == "up"),
-            "down": sum(1 for e in data["log"] if e.get("rating") == "down"),
-        }
-        _write_json(_feedback_path(), data)
-        return dict(data["counts"])
+            rows.append({"message_id": message_id, "time": _now(), "rating": rating,
+                         "question": question[:500], "answer": answer[:1000]})
+        _write_rows(feedback_path(), FEEDBACK_FIELDS, rows)
+    return feedback_counts()
 
 
 def feedback_counts() -> dict[str, int]:
-    data = _read_json(_feedback_path(), _empty_feedback())
-    counts = data.get("counts", {}) if isinstance(data, dict) else {}
-    return {"up": int(counts.get("up", 0)), "down": int(counts.get("down", 0))}
+    rows = _read_rows(feedback_path())
+    return {"up": sum(r.get("rating") == "up" for r in rows), "down": sum(r.get("rating") == "down" for r in rows)}

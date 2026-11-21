@@ -1,67 +1,69 @@
-import json
+import csv
 
 import pytest
 
-import config
 import tickets
 
 
 def _make(**overrides):
-    data = dict(name="Asha Rao", email="asha@example.com", category="Refunds",
-                summary="Refund for order not received yet", order_id="TT-48213", transcript="Customer: hi")
+    data = dict(message="My order arrived broken", reason="Damaged or wrong item", priority="high")
     data.update(overrides)
     return tickets.create_ticket(**data)
 
 
-def test_ticket_ids_start_at_1042_and_increment():
-    first, second = _make(), _make(name="Ravi")
-    assert first["id"] == "TT-1042" and second["id"] == "TT-1043"
-    assert first["status"] == "Open"
+def test_ticket_ids_start_at_tkt_1001_and_never_repeat():
+    ids = [_make()["ticket_id"] for _ in range(3)]
+    assert ids == ["TKT-1001", "TKT-1002", "TKT-1003"]
 
 
-def test_tickets_persist_to_json_newest_first():
-    _make(); _make(name="Ravi K")
-    saved = json.loads((config.data_dir() / "tickets.json").read_text())
-    assert [t["id"] for t in saved] == ["TT-1042", "TT-1043"]
-    assert [t["id"] for t in tickets.list_tickets()] == ["TT-1043", "TT-1042"]
+def test_tickets_csv_has_the_brief_columns():
+    _make(); _make(message="Let me talk to a real person.", reason="Customer asked for a person", priority="normal")
+    with tickets.tickets_path().open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert list(rows[0])[:6] == ["ticket_id", "time", "message", "reason", "priority", "status"]
+    assert [r["ticket_id"] for r in rows] == ["TKT-1001", "TKT-1002"]
+    assert rows[0]["status"] == "open" and rows[0]["priority"] == "high" and rows[1]["priority"] == "normal"
+    assert [t["ticket_id"] for t in tickets.list_tickets(status="open")] == ["TKT-1002", "TKT-1001"]
 
 
-@pytest.mark.parametrize("field, value", [("name", " "), ("email", "not-an-email"),
-                                          ("category", "Nope"), ("summary", "short"),
-                                          ("order_id", "<script>")])
-def test_invalid_tickets_are_rejected(field, value):
+def test_unknown_priority_becomes_normal():
+    assert _make(priority="urgent!!")["priority"] == "normal"
+
+
+@pytest.mark.parametrize("field", ["message", "reason"])
+def test_ticket_needs_message_and_reason(field):
     with pytest.raises(ValueError):
-        _make(**{field: value})
-    assert tickets.list_tickets() == []
+        _make(**{field: "  "})
 
 
-def test_order_id_is_optional():
-    assert _make(order_id="")["order_id"] == ""
+def test_contact_details_can_be_added_later():
+    ticket = _make()
+    updated = tickets.update_contact(ticket["ticket_id"], "Asha Rao", "asha@example.com", "458812")
+    assert updated["email"] == "asha@example.com"
+    assert tickets.get_ticket("tkt-1001")["name"] == "Asha Rao"
+    with pytest.raises(ValueError):
+        tickets.update_contact(ticket["ticket_id"], "Asha", "not-an-email")
+    with pytest.raises(ValueError):
+        tickets.update_contact("TKT-9999", "Asha", "asha@example.com")
+
+
+def test_messages_with_commas_quotes_and_newlines_round_trip():
+    msg = 'Refund of ₹3,500 — "urgent"\nsecond line'
+    _make(message=msg)
+    assert tickets.list_tickets()[0]["message"] == msg
 
 
 def test_corrupt_ticket_file_is_backed_up_and_replaced():
-    path = config.data_dir() / "tickets.json"
-    path.write_text("{not json")
+    tickets.tickets_path().write_bytes(b"\xff\xfe\x00bad")
     assert tickets.list_tickets() == []
-    assert _make()["id"] == "TT-1042"
-    assert list(config.data_dir().glob("tickets.json.corrupt-*"))
+    assert _make()["ticket_id"] == "TKT-1001"
+    assert list(tickets.tickets_path().parent.glob("tickets.csv.corrupt-*"))
 
 
-def test_feedback_counts_and_rerating_does_not_double_count():
+def test_feedback_csv_counts_and_rerating_does_not_double_count():
     assert tickets.record_feedback("m1", "up", "q", "a") == {"up": 1, "down": 0}
     assert tickets.record_feedback("m2", "down") == {"up": 1, "down": 1}
     assert tickets.record_feedback("m1", "down") == {"up": 0, "down": 2}
-    assert tickets.feedback_counts() == {"up": 0, "down": 2}
-    log = json.loads((config.data_dir() / "feedback.json").read_text())["log"]
-    assert len(log) == 2
-
-
-def test_feedback_rejects_unknown_rating():
+    assert tickets.feedback_path().name == "feedback.csv"
     with pytest.raises(ValueError):
         tickets.record_feedback("m1", "meh")
-
-
-def test_category_suggestion():
-    assert tickets.suggest_category("Gift Hampers") == "Gift Hampers"
-    assert tickets.suggest_category("Tea Freshness") == "Tea & Coffee Freshness"
-    assert tickets.suggest_category(None) == "Other"

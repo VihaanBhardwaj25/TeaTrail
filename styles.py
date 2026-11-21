@@ -147,6 +147,11 @@ h1, h2, h3 { font-family: var(--tt-serif) !important; letter-spacing: -0.01em; c
 .tt-ticket-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .tt-ticket-id { font-family: var(--tt-serif); font-size: 1.6rem; font-weight: 700; color: var(--tt-green); letter-spacing: .02em; }
 .tt-badge { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 3px 9px; border-radius: 999px; background: var(--tt-green-tint); color: var(--tt-green-ink); }
+.tt-badge.high { background: var(--tt-chai-tint); color: var(--tt-chai-dark); }
+.tt-queue-item.normal { border-left-color: var(--tt-green-2); }
+.tt-queue-item.normal .cat { background: var(--tt-green-tint); color: var(--tt-green-ink); }
+[class*="st-key-offer_"] button { border-radius: 999px !important; }
+[class*="st-key-offer_"] [class*="st-key-yes_"] button { background: var(--tt-chai) !important; border-color: var(--tt-chai) !important; color: #fff !important; }
 .tt-ticket dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 10px 0 0; font-size: .86rem; }
 .tt-ticket dt { color: var(--tt-muted); } .tt-ticket dd { margin: 0; font-weight: 600; }
 
@@ -217,19 +222,19 @@ def hero_html(provider_label: str, online: bool, faq_count: int, kb_label: str, 
 <div class="tt-hero">
   <div class="tt-leaf-deco">{LEAF_SVG.format(s=120)}</div>
   <div class="tt-hero-top">
-    <div class="tt-brand">{LOGO_SVG.format(s=30)} TeaTrail <small>· Support</small></div>
+    <div class="tt-brand">{LOGO_SVG.format(s=30)} TeaTrail Store <small>· Support</small></div>
     <div class="tt-status"><span class="{dot}"></span>{status}</div>
   </div>
   <div class="tt-hero-body">
     <img src="{avatar_uri}" alt="Tara"/>
     <div>
       <h1>Hi, I'm Tara</h1>
-      <p>Your TeaTrail tea specialist. Ask me about delivery, payments, returns, refunds, freshness and gift hampers.</p>
+      <p>Your TeaTrail helper for products, orders, delivery, payments, returns and refunds.</p>
     </div>
   </div>
   <div class="tt-meta">
     <span class="tt-pill">📚 {faq_count} FAQs · {escape(kb_label)}</span>
-    <span class="tt-pill">🎫 Human hand-off anytime</span>
+    <span class="tt-pill">🎫 A person replies within 24 hours</span>
     <span class="tt-pill chai">🍃 Fresh from the estate</span>
   </div>
 </div>"""
@@ -246,13 +251,7 @@ def lock_html() -> str:
 
 
 def welcome_html() -> str:
-    return """
-<div class="tt-welcome">
-  <h3>What can I help you with today? ☕</h3>
-  <p>Tap a popular question below or type your own. If I can't answer something, I'll pass it to a human teammate.</p>
-</div>
-<div class="tt-section-label">Popular questions</div>"""
-
+    return '<div class="tt-section-label">Popular questions</div>'
 
 def sources_html(sources: list[dict]) -> str:
     if not sources:
@@ -269,31 +268,30 @@ def handoff_html() -> str:
 
 
 def ticket_html(ticket: dict) -> str:
-    order = escape(ticket.get("order_id") or "—")
+    priority = ticket.get("priority", "normal")
+    rows = [("Reason", ticket.get("reason", "")), ("Priority", priority.title()), ("Status", ticket.get("status", "open").title())]
+    if ticket.get("email"):
+        rows.append(("Reply to", ticket["email"]))
+    items = "".join(f"<dt>{escape(k)}</dt><dd>{escape(v)}</dd>" for k, v in rows)
     return f"""
 <div class="tt-ticket">
-  <div class="tt-ticket-top"><div class="tt-ticket-id">{escape(ticket["id"])}</div><span class="tt-badge">Open</span></div>
-  <dl>
-    <dt>Category</dt><dd>{escape(ticket["category"])}</dd>
-    <dt>Name</dt><dd>{escape(ticket["name"])}</dd>
-    <dt>Reply to</dt><dd>{escape(ticket["email"])}</dd>
-    <dt>Order ID</dt><dd>{order}</dd>
-  </dl>
+  <div class="tt-ticket-top"><div class="tt-ticket-id">{escape(ticket["ticket_id"])}</div>
+  <span class="tt-badge {escape(priority)}">{escape(priority)} priority</span></div>
+  <dl>{items}</dl>
 </div>"""
-
 
 def queue_item_html(ticket: dict) -> str:
-    summary = ticket.get("summary", "")
-    summary = summary[:110] + ("…" if len(summary) > 110 else "")
-    when = relative_time(ticket.get("created_at", ""))
-    via = "via Tara" if ticket.get("source") == "tara" else "via button"
+    message = ticket.get("message", "")
+    message = message[:110] + ("…" if len(message) > 110 else "")
+    when = relative_time(ticket.get("time", ""))
+    priority = ticket.get("priority", "normal")
+    who = f" · {ticket['name']}" if ticket.get("name") else ""
     return f"""
-<div class="tt-queue-item">
-  <div class="row"><span class="id">{escape(ticket["id"])}</span><span class="cat">{escape(ticket.get("category", ""))}</span></div>
-  <div class="who">{escape(ticket.get("name", ""))} · {escape(when)} · {via}</div>
-  <div class="sum">{escape(summary)}</div>
+<div class="tt-queue-item {escape(priority)}">
+  <div class="row"><span class="id">{escape(ticket["ticket_id"])}</span><span class="cat">{escape(priority)}</span></div>
+  <div class="who">{escape(ticket.get("reason", ""))} · {escape(when)}{escape(who)}</div>
+  <div class="sum">"{escape(message)}"</div>
 </div>"""
-
 
 def card_html(label: str, value: str, sub: str = "") -> str:
     sub_html = f'<div class="s">{escape(sub)}</div>' if sub else ""

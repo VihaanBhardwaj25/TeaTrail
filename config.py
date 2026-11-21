@@ -22,7 +22,7 @@ load_dotenv(APP_DIR / ".env")
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-5-5",
     "openai": "gpt-5-mini",
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-2.5-flash-lite",
 }
 
 PROVIDER_LABELS = {

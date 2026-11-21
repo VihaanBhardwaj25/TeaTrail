@@ -189,6 +189,7 @@ _PHRASES = {
     r"same[- ]day": " express ",
     r"net ?banking": " pay ",
     r"how long": " time ",
+    r"refund polic(y|ies)": " refund ",
     r"\b\d{6}\b": " pincode ",
     r"(physical|offline|retail|your|a) (store|shop|outlet)|\bshowroom\b|\boutlet\b": " shop ",
     r"sign ?in|log ?in": " password ",
@@ -255,7 +256,8 @@ _STOPWORDS = set(
     she it its they them their this that these those what which who whom whose why how where can
     could would should will shall may might must just so than too very also any some all no not
     there here please hi hello hey thanks thank tell know want need get got am im ive id dont
-    teatrail tara us one sell sells buy stock carry still really already yet ok okay sure everywhere guys
+    teatrail tara us one sell sells buy stock carry still
+    many something anything thing things kind exactly really already yet ok okay sure everywhere guys
     unacceptable terrible horrible awful worst ridiculous disgusting pathetic useless angry
     furious upset annoyed frustrated seriously wtf""".split()
 )
