@@ -5,17 +5,39 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import importlib
+import os
+import sys
 import time
 import uuid
 from html import escape
 
 import streamlit as st
 
-import config
-import faq_loader
-import styles
-import tickets
-from agent import GREETING, Tara, format_transcript
+
+def _reload_changed_modules() -> None:
+    """Re-import local modules whose files changed since they were loaded.
+
+    Streamlit Cloud reruns app.py after a git push but can keep older copies of
+    the other modules in memory; reloading them keeps every file on one version.
+    """
+    for name in ("config", "faq_loader", "tickets", "agent", "styles"):  # dependency order
+        module = sys.modules.get(name)
+        if module is None or not getattr(module, "__file__", None):
+            continue
+        mtime = os.path.getmtime(module.__file__)
+        if getattr(module, "_tt_mtime", None) != mtime:
+            module = importlib.reload(module)
+            module._tt_mtime = mtime
+
+
+_reload_changed_modules()
+
+import config  # noqa: E402
+import faq_loader  # noqa: E402
+import styles  # noqa: E402
+import tickets  # noqa: E402
+from agent import GREETING, Tara, format_transcript  # noqa: E402
 
 MAX_ATTEMPTS = 5
 LOCKOUT_SECONDS = 30
