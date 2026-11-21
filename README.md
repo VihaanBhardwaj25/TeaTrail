@@ -82,6 +82,29 @@ feedback under each reply is saved to `data/feedback.json`.
 > Streamlit Community Cloud storage is ephemeral: `data/*.json` resets when the app restarts. That's fine
 > for a demo; use a database or a Sheets/CRM integration for production.
 
+## Run Tara in Google ADK Web (optional)
+
+The same agent, guardrails, live FAQ sheet and ticket queue also run in Google's
+[Agent Development Kit](https://google.github.io/adk-docs/) developer UI, where you can see each tool call.
+
+```bash
+pip install -r adk_agents/requirements.txt
+```
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+```bash
+adk web adk_agents
+```
+
+Open http://localhost:8000 and pick **tara**. Claude (`claude-opus-5-5`, effort `low`) runs through ADK's built-in
+Anthropic model class; if only `GOOGLE_API_KEY` is set, it uses Gemini instead. Tara has two tools:
+`raise_ticket` (writes to the same `data/tickets.json`, with the chat transcript attached) and `check_ticket`.
+Off-topic and prompt-injection messages are answered by a guardrail callback without calling the model.
+ADK Web is a developer tool: the Streamlit app remains the customer-facing site.
+
 ## Project layout
 
 | File | Role |
@@ -92,6 +115,7 @@ feedback under each reply is saved to `data/feedback.json`.
 | `tickets.py` | Ticket validation + `TT-####` IDs, feedback log; atomic, lock-protected JSON writes |
 | `styles.py` | Design system: palette, Fraunces + Plus Jakarta Sans, chat bubbles, cards, escaped HTML snippets |
 | `config.py` | One place to read settings from secrets → env → defaults |
+| `adk_agents/tara/` | The same agent for Google ADK Web (`adk web adk_agents`) |
 | `sample_faqs.csv` | Offline copy of the TeaTrail FAQ sheet (20 FAQs), used if Google is unreachable |
 | `.streamlit/config.toml` | Theme (colours, fonts, radii) and minimal toolbar |
 
@@ -105,7 +129,8 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-The 106 tests cover the FAQ loader (URL normalisation, aliases, fallbacks, retrieval), guardrails,
+The 109 tests (2 need `google-adk`) cover the FAQ loader (URL normalisation, aliases, fallbacks, retrieval), guardrails,
 tickets and feedback, the agent (offline answers, streamed control tokens, error/refusal fallback), the
-real Anthropic/OpenAI SDKs against a local fake API (request shape and streaming), and an end-to-end
-Streamlit `AppTest` smoke test (lock screen → chips → hand-off).
+real Anthropic/OpenAI SDKs against a local fake API (request shape and streaming), an end-to-end
+Streamlit `AppTest` smoke test (lock screen → chips → hand-off), and the ADK agent run through ADK's runner
+against a fake Anthropic API (answer, blocked injection, `raise_ticket` tool call).
