@@ -521,7 +521,7 @@ def stream_anthropic(settings: LLMSettings) -> ProviderFn:
     def run(system: str, messages: list[dict[str, str]]) -> Iterator[str]:
         import anthropic
 
-        client = anthropic.Anthropic(api_key=settings.api_key, timeout=60.0, max_retries=2)
+        client = anthropic.Anthropic(api_key=settings.api_key, timeout=30.0, max_retries=1)
         params: dict = dict(
             model=settings.model,
             max_tokens=16000,
@@ -567,7 +567,7 @@ def stream_openai(settings: LLMSettings) -> ProviderFn:
     def run(system: str, messages: list[dict[str, str]]) -> Iterator[str]:
         from openai import OpenAI
 
-        client = OpenAI(api_key=settings.api_key, timeout=60.0, max_retries=2)
+        client = OpenAI(api_key=settings.api_key, timeout=30.0, max_retries=1)
         stream = client.chat.completions.create(
             model=settings.model,
             messages=[{"role": "system", "content": system}, *messages],
